@@ -1,0 +1,3 @@
+flask
+azure-communication-messages
+python-dotenv
