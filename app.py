@@ -1,6 +1,6 @@
 import os
 import json
-from flask import Flask, request, jsonify, abort
+from flask import Flask, request, jsonify, abort, render_template_string
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -9,6 +9,12 @@ from azure.communication.messages import NotificationMessagesClient
 from azure.communication.messages.models import TextNotificationContent
 
 app = Flask(__name__)
+
+# ------------------------
+# Global Logs
+# ------------------------
+logs = []
+
 
 # ------------------------
 # Message Sender Class
@@ -28,19 +34,23 @@ class MessagesQuickstart:
         message_responses = messaging_client.send(text_options)
         response = message_responses.receipts[0]
         if response is not None:
-            print(f"✅ WhatsApp message {response.message_id} sent to {response.to}")
+            msg = f"✅ Sent reply to {response.to}, id={response.message_id}"
+            print(msg)
+            logs.append(msg)
         else:
-            print("❌ Message failed to send")
+            msg = "❌ Failed to send reply"
+            print(msg)
+            logs.append(msg)
 
 
 # ------------------------
-# Flask Webhook
+# Webhook Listener
 # ------------------------
 @app.route("/eventgrid", methods=["POST"])
 def eventgrid_listener():
     try:
         event = request.get_json()
-        print("📩 Incoming Event:", json.dumps(event, indent=2))
+        logs.append(f"📩 Incoming Event: {json.dumps(event)}")
 
         # EventGrid sends an array of events
         for e in event:
@@ -49,26 +59,57 @@ def eventgrid_listener():
             # 1. Subscription validation handshake
             if event_type == "Microsoft.EventGrid.SubscriptionValidationEvent":
                 validation_code = e["data"]["validationCode"]
-                print("🔑 Subscription validation:", validation_code)
+                logs.append(f"🔑 Validation request received: {validation_code}")
                 return jsonify({"validationResponse": validation_code})
 
-            # 2. Incoming ACS WhatsApp notification
-            elif event_type == "Microsoft.Communication.ChatMessageReceived" or event_type == "Notification":
+            # 2. Incoming ACS WhatsApp message
+            elif event_type == "Microsoft.Communication.MessagesReceived":
                 data = e.get("data", {})
-                from_number = data.get("from") or os.getenv("RECIPIENT_PHONE_NUMBER")
-                message_body = data.get("messageBody", "Hello")
+                for message in data.get("messages", []):
+                    from_number = message.get("from")
+                    message_body = message.get("content", {}).get("text", {}).get("body", "")
 
-                print(f"📲 Message from {from_number}: {message_body}")
+                    msg_log = f"📲 Incoming message from {from_number}: {message_body}"
+                    print(msg_log)
+                    logs.append(msg_log)
 
-                # Send auto-reply
-                mq = MessagesQuickstart()
-                mq.send_text_message(from_number, "Thanks! We received your message.")
+                    # Send reply
+                    mq = MessagesQuickstart()
+                    mq.send_text_message(from_number, f"You said: {message_body}")
 
         return "", 200
 
     except Exception as ex:
-        print("❌ Error in webhook:", str(ex))
+        err = f"❌ Error in webhook: {str(ex)}"
+        print(err)
+        logs.append(err)
         abort(400, str(ex))
+
+
+# ------------------------
+# Logs Page
+# ------------------------
+@app.route("/logs", methods=["GET"])
+def show_logs():
+    template = """
+    <html>
+        <head><title>Webhook Logs</title></head>
+        <body>
+            <h1>📜 Webhook Logs</h1>
+            <ul>
+            {% for log in logs %}
+                <li>{{ log }}</li>
+            {% endfor %}
+            </ul>
+        </body>
+    </html>
+    """
+    return render_template_string(template, logs=logs)
+
+
+@app.route("/", methods=["GET"])
+def home():
+    return "ACS WhatsApp Webhook is running 🚀. Check /logs for activity.", 200
 
 
 if __name__ == "__main__":
