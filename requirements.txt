@@ -1,4 +1,5 @@
-flask
-azure-communication-messages
 gunicorn==20.1.0
-python-dotenv
+Flask==2.3.3
+python-dotenv==1.1.1
+azure-communication-messages==1.1.0
+requests==2.31.0
