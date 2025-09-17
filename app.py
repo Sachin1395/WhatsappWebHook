@@ -63,19 +63,23 @@ def eventgrid_listener():
                 return jsonify({"validationResponse": validation_code})
 
             # 2. Incoming ACS WhatsApp message
-            elif event_type == "Microsoft.Communication.MessagesReceived":
+            elif event_type == "Microsoft.Communication.AdvancedMessageReceived":
                 data = e.get("data", {})
-                for message in data.get("messages", []):
-                    from_number = message.get("from")
-                    message_body = message.get("content", {}).get("text", {}).get("body", "")
+                from_number = data.get("from")
+                message_body = data.get("content", "")
+            
+                # ensure number has + prefix
+                if not from_number.startswith("+"):
+                    from_number = f"+{from_number}"
+            
+                msg_log = f"📲 Incoming AdvancedMessage from {from_number}: {message_body}"
+                print(msg_log)
+                logs.append(msg_log)
+            
+                # Send reply
+                mq = MessagesQuickstart()
+                mq.send_text_message(from_number, f"You said: {message_body}")
 
-                    msg_log = f"📲 Incoming message from {from_number}: {message_body}"
-                    print(msg_log)
-                    logs.append(msg_log)
-
-                    # Send reply
-                    mq = MessagesQuickstart()
-                    mq.send_text_message(from_number, f"You said: {message_body}")
 
         return "", 200
 
@@ -114,3 +118,4 @@ def home():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
+
