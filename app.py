@@ -89,6 +89,8 @@ def eventgrid_listener():
 # ------------------------
 # PDF Upload & Merge
 # ------------------------
+from flask import send_file, url_for
+
 @app.route('/upload', methods=['GET', 'POST'])
 def upload():
     if request.method == 'POST':
@@ -106,10 +108,11 @@ def upload():
         date = content.get('date', 'N/A')
         time = content.get('time', 'N/A')
 
-        input_pdf = "input.pdf"   # your base template
+        input_pdf = "input.pdf"   # base template
         output_pdf = "output.pdf"
         temp_pdf = "temp.pdf"
 
+        # Create overlay PDF
         c = canvas.Canvas(temp_pdf, pagesize=A4)
         c.setFont("Helvetica", 15)
         c.drawString(250, 507, str(name))
@@ -123,6 +126,7 @@ def upload():
         c.drawString(95, 135, str(time))
         c.save()
 
+        # Merge overlay into template
         reader = PdfReader(input_pdf)
         writer = PdfWriter()
         overlay_reader = PdfReader(temp_pdf)
@@ -138,10 +142,31 @@ def upload():
             writer.write(f)
 
         print(f"PDF created successfully: {output_pdf}")
-        return jsonify({"received": content, "output_pdf": output_pdf}), 200
+
+        # Redirect to download page with button
+        return f"""
+        <html>
+            <head><title>PDF Generated</title></head>
+            <body>
+                <h2>✅ PDF Generated Successfully!</h2>
+                <p>Click the button below to download your file:</p>
+                <a href="{url_for('download_pdf')}" download>
+                    <button style="padding:10px 20px; font-size:16px; cursor:pointer;">⬇ Download PDF</button>
+                </a>
+            </body>
+        </html>
+        """
 
     else:
         return "This is the upload page. Send POST with JSON to use it."
+
+
+@app.route('/download', methods=['GET'])
+def download_pdf():
+    output_pdf = "output.pdf"
+    if not os.path.exists(output_pdf):
+        return "❌ No PDF generated yet. Please POST data to /upload first."
+    return send_file(output_pdf, as_attachment=True)
 
 # ------------------------
 # Logs Page
@@ -172,3 +197,4 @@ def home():
 # ------------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
+
