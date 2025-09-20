@@ -3,18 +3,22 @@ import json
 from flask import Flask, request, jsonify, abort, render_template_string
 from dotenv import load_dotenv
 
-load_dotenv()
-
+# Azure Communication Services
 from azure.communication.messages import NotificationMessagesClient
 from azure.communication.messages.models import TextNotificationContent
 
+# PDF Libraries
+from reportlab.lib.pagesizes import A4
+from reportlab.pdfgen import canvas
+from PyPDF2 import PdfReader, PdfWriter
+
+load_dotenv()
 app = Flask(__name__)
 
 # ------------------------
 # Global Logs
 # ------------------------
 logs = []
-
 
 # ------------------------
 # Message Sender Class
@@ -42,7 +46,6 @@ class MessagesQuickstart:
             print(msg)
             logs.append(msg)
 
-
 # ------------------------
 # Webhook Listener
 # ------------------------
@@ -52,34 +55,28 @@ def eventgrid_listener():
         event = request.get_json()
         logs.append(f"📩 Incoming Event: {json.dumps(event)}")
 
-        # EventGrid sends an array of events
         for e in event:
             event_type = e.get("eventType")
 
-            # 1. Subscription validation handshake
             if event_type == "Microsoft.EventGrid.SubscriptionValidationEvent":
                 validation_code = e["data"]["validationCode"]
                 logs.append(f"🔑 Validation request received: {validation_code}")
                 return jsonify({"validationResponse": validation_code})
 
-            # 2. Incoming ACS WhatsApp message
             elif event_type == "Microsoft.Communication.AdvancedMessageReceived":
                 data = e.get("data", {})
                 from_number = data.get("from")
                 message_body = data.get("content", "")
-            
-                # ensure number has + prefix
+
                 if not from_number.startswith("+"):
                     from_number = f"+{from_number}"
-            
+
                 msg_log = f"📲 Incoming AdvancedMessage from {from_number}: {message_body}"
                 print(msg_log)
                 logs.append(msg_log)
-            
-                # Send reply
+
                 mq = MessagesQuickstart()
                 mq.send_text_message(from_number, f"You said: {message_body}")
-
 
         return "", 200
 
@@ -89,6 +86,62 @@ def eventgrid_listener():
         logs.append(err)
         abort(400, str(ex))
 
+# ------------------------
+# PDF Upload & Merge
+# ------------------------
+@app.route('/upload', methods=['GET', 'POST'])
+def upload():
+    if request.method == 'POST':
+        content = request.get_json()
+        print("Received JSON:", content)
+
+        # Default values if keys are missing
+        name = content.get('name', 'N/A')
+        age = content.get('age', 'N/A')
+        gender = content.get('gender', 'N/A')
+        city = content.get('city', 'N/A')
+        phone = content.get('phone', 'N/A')
+        symptoms = content.get('symptoms', 'N/A')
+        recommendation = content.get('recommendation', 'N/A')
+        date = content.get('date', 'N/A')
+        time = content.get('time', 'N/A')
+
+        input_pdf = "input.pdf"   # your base template
+        output_pdf = "output.pdf"
+        temp_pdf = "temp.pdf"
+
+        c = canvas.Canvas(temp_pdf, pagesize=A4)
+        c.setFont("Helvetica", 15)
+        c.drawString(250, 507, str(name))
+        c.drawString(250, 487, str(age))
+        c.drawString(250, 467, str(gender))
+        c.drawString(250, 447, str(city))
+        c.drawString(250, 427, str(phone))
+        c.drawString(100, 357, str(symptoms))
+        c.drawString(100, 235, str(recommendation))
+        c.drawString(100, 155, str(date))
+        c.drawString(95, 135, str(time))
+        c.save()
+
+        reader = PdfReader(input_pdf)
+        writer = PdfWriter()
+        overlay_reader = PdfReader(temp_pdf)
+
+        for page_num in range(len(reader.pages)):
+            page = reader.pages[page_num]
+            if page_num == 0:
+                overlay_page = overlay_reader.pages[0]
+                page.merge_page(overlay_page)
+            writer.add_page(page)
+
+        with open(output_pdf, "wb") as f:
+            writer.write(f)
+
+        print(f"PDF created successfully: {output_pdf}")
+        return jsonify({"received": content, "output_pdf": output_pdf}), 200
+
+    else:
+        return "This is the upload page. Send POST with JSON to use it."
 
 # ------------------------
 # Logs Page
@@ -110,12 +163,12 @@ def show_logs():
     """
     return render_template_string(template, logs=logs)
 
-
 @app.route("/", methods=["GET"])
 def home():
-    return "ACS WhatsApp Webhook is running 🚀. Check /logs for activity.", 200
+    return "ACS WhatsApp Webhook & PDF Service 🚀. Check /logs or /upload.", 200
 
-
+# ------------------------
+# Run
+# ------------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
-
