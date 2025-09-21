@@ -1,5 +1,7 @@
 import os
 import json
+import threading
+import time
 from flask import Flask, request, jsonify, abort, render_template_string, send_file, url_for
 from dotenv import load_dotenv
 
@@ -15,6 +17,7 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
 from PyPDF2 import PdfReader, PdfWriter
 
+
 # ------------------------
 # Load Environment
 # ------------------------
@@ -27,6 +30,44 @@ api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-12-01-preview")
 subscription_key = os.getenv("AZURE_OPENAI_KEY")
 
 logs = []
+
+
+# ------------------------
+# Conversation Manager with Auto-Expiry
+# ------------------------
+class ConversationManager:
+    def __init__(self, expiry_seconds=1800):  # 30 minutes default
+        self.conversations = {}
+        self.lock = threading.Lock()
+        self.expiry_seconds = expiry_seconds
+
+    def get_or_create(self, user_id, bot_factory):
+        now = time.time()
+        with self.lock:
+            # cleanup before returning
+            self.cleanup()
+
+            if user_id not in self.conversations:
+                self.conversations[user_id] = {
+                    "bot": bot_factory(),
+                    "last_activity": now
+                }
+            else:
+                self.conversations[user_id]["last_activity"] = now
+
+            return self.conversations[user_id]["bot"]
+
+    def cleanup(self):
+        now = time.time()
+        expired = [
+            user_id for user_id, data in self.conversations.items()
+            if now - data["last_activity"] > self.expiry_seconds
+        ]
+        for user_id in expired:
+            del self.conversations[user_id]
+
+
+conversation_manager = ConversationManager(expiry_seconds=1800)  # 30 min expiry
 
 
 # ------------------------
@@ -62,45 +103,6 @@ Rules:
    - If the user speaks in Tamil using English letters (e.g., "enoda peru sachin") → reply in colloquial Tamil using English letters.  
    - Match the user’s language style, but always keep answers clear and supportive.  
 8. Never prescribe specific medicines. If the issue is serious, advise them to visit a nearby doctor or government hospital.  
-
-Example Dialogues:
-
-User: Hello doctor  
-Assistant: Namaste, I am Dr. Sahayak. Do not worry, we will take this step by step. How are you feeling today?  
-
-User: enoda peru sachin  
-Assistant: Sollunga Sachin, ungaluku na epdi udhavi pannatum?  
-
-User: mera naam sachin  
-Assistant: Thik hai Sachin, aapko main kaise madad kar sakta hoon?  
-
-User: I have stomach pain  
-Assistant: I understand. First, may I know your age? (one word)  
-
-User: 24  
-Assistant: Thank you. And your gender? (Male/Female/Other)  
-
-User: Male  
-Assistant: Got it. Which city or village are you from?  
-
-User: Delhi  
-Assistant: Okay. Along with stomach pain, do you also have vomiting? (Yes/No)  
-
-User: Yes  
-Assistant: Do you also have loose motion/diarrhoea? (Yes/No)  
-
-User: Yes  
-Assistant: Do you have fever? (Yes/No)  
-
-User: No  
-Assistant: Thanks for answering. Based on your symptoms, this looks like food poisoning.  
-- Why affected: Likely due to contaminated food or water.  
-- What to do: Drink ORS or salted-sugar water, stay hydrated, and rest.  
-- What not to do: Avoid oily, spicy food, alcohol, and milk.  
-- Awareness: In India, food poisoning is common in monsoon. Always wash hands, drink clean water, and avoid stale food.  
-
-If symptoms worsen or do not improve in 24 hours, please visit the nearest health centre.  
-
         """}]
 
     def chat(self, user_input: str) -> str:
@@ -173,7 +175,12 @@ def eventgrid_listener():
                 logs.append(msg_log)
 
                 mq = MessagesQuickstart()
-                bot = AzureChatBot(endpoint, subscription_key, api_version, deployment)
+
+                # reuse or create bot per user (with auto-expiry cleanup)
+                bot = conversation_manager.get_or_create(
+                    from_number,
+                    lambda: AzureChatBot(endpoint, subscription_key, api_version, deployment)
+                )
 
                 reply = bot.chat(message_body)
                 mq.send_text_message(from_number, reply)
@@ -302,4 +309,3 @@ def home():
 # ------------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
-
