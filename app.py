@@ -7,18 +7,48 @@ from dotenv import load_dotenv
 from azure.communication.messages import NotificationMessagesClient
 from azure.communication.messages.models import TextNotificationContent
 
-# PDF Libraries
-from reportlab.lib.pagesizes import A4
-from reportlab.pdfgen import canvas
-from PyPDF2 import PdfReader, PdfWriter
+# OpenAI
+from openai import AzureOpenAI
 
 load_dotenv()
 app = Flask(__name__)
 
 # ------------------------
-# Global Logs
+# Config
 # ------------------------
+endpoint = os.getenv("AZURE_OPENAI_ENDPOINT", "https://whatsappmsgrespond.openai.azure.com/")
+deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o-mini")
+api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-12-01-preview")
+subscription_key = os.getenv("AZURE_OPENAI_KEY")
+
 logs = []
+
+
+# ------------------------
+# Azure ChatBot Class
+# ------------------------
+class AzureChatBot:
+    def __init__(self, endpoint, api_key, api_version, deployment):
+        self.client = AzureOpenAI(
+            api_version=api_version,
+            azure_endpoint=endpoint,
+            api_key=api_key,
+        )
+        self.deployment = deployment
+        self.conversation = [{"role": "system", "content": "You are a helpful assistant."}]
+
+    def chat(self, user_input: str) -> str:
+        self.conversation.append({"role": "user", "content": user_input})
+        response = self.client.chat.completions.create(
+            model=self.deployment,
+            messages=self.conversation,
+            max_tokens=512,
+            temperature=0.7,
+        )
+        reply = response.choices[0].message.content
+        self.conversation.append({"role": "assistant", "content": reply})
+        return reply
+
 
 # ------------------------
 # Message Sender Class
@@ -45,6 +75,7 @@ class MessagesQuickstart:
             msg = "❌ Failed to send reply"
             print(msg)
             logs.append(msg)
+
 
 # ------------------------
 # Webhook Listener
@@ -76,7 +107,10 @@ def eventgrid_listener():
                 logs.append(msg_log)
 
                 mq = MessagesQuickstart()
-                mq.send_text_message(from_number, f"You said: {message_body}")
+                bot = AzureChatBot(endpoint, subscription_key, api_version, deployment)
+
+                reply = bot.chat(message_body)
+                mq.send_text_message(from_number, reply)
 
         return "", 200
 
@@ -86,87 +120,6 @@ def eventgrid_listener():
         logs.append(err)
         abort(400, str(ex))
 
-# ------------------------
-# PDF Upload & Merge
-# ------------------------
-from flask import send_file, url_for
-
-@app.route('/upload', methods=['GET', 'POST'])
-def upload():
-    if request.method == 'POST':
-        content = request.get_json()
-        print("Received JSON:", content)
-
-        # Default values if keys are missing
-        name = content.get('name', 'N/A')
-        age = content.get('age', 'N/A')
-        gender = content.get('gender', 'N/A')
-        city = content.get('city', 'N/A')
-        phone = content.get('phone', 'N/A')
-        symptoms = content.get('symptoms', 'N/A')
-        recommendation = content.get('recommendation', 'N/A')
-        date = content.get('date', 'N/A')
-        time = content.get('time', 'N/A')
-
-        input_pdf = "input.pdf"   # base template
-        output_pdf = "output.pdf"
-        temp_pdf = "temp.pdf"
-
-        # Create overlay PDF
-        c = canvas.Canvas(temp_pdf, pagesize=A4)
-        c.setFont("Helvetica", 15)
-        c.drawString(250, 507, str(name))
-        c.drawString(250, 487, str(age))
-        c.drawString(250, 467, str(gender))
-        c.drawString(250, 447, str(city))
-        c.drawString(250, 427, str(phone))
-        c.drawString(100, 357, str(symptoms))
-        c.drawString(100, 235, str(recommendation))
-        c.drawString(100, 155, str(date))
-        c.drawString(95, 135, str(time))
-        c.save()
-
-        # Merge overlay into template
-        reader = PdfReader(input_pdf)
-        writer = PdfWriter()
-        overlay_reader = PdfReader(temp_pdf)
-
-        for page_num in range(len(reader.pages)):
-            page = reader.pages[page_num]
-            if page_num == 0:
-                overlay_page = overlay_reader.pages[0]
-                page.merge_page(overlay_page)
-            writer.add_page(page)
-
-        with open(output_pdf, "wb") as f:
-            writer.write(f)
-
-        print(f"PDF created successfully: {output_pdf}")
-
-        # Redirect to download page with button
-        return f"""
-        <html>
-            <head><title>PDF Generated</title></head>
-            <body>
-                <h2>✅ PDF Generated Successfully!</h2>
-                <p>Click the button below to download your file:</p>
-                <a href="{url_for('download_pdf')}" download>
-                    <button style="padding:10px 20px; font-size:16px; cursor:pointer;">⬇ Download PDF</button>
-                </a>
-            </body>
-        </html>
-        """
-
-    else:
-        return "This is the upload page. Send POST with JSON to use it."
-
-
-@app.route('/download', methods=['GET'])
-def download_pdf():
-    output_pdf = "output.pdf"
-    if not os.path.exists(output_pdf):
-        return "❌ No PDF generated yet. Please POST data to /upload first."
-    return send_file(output_pdf, as_attachment=True)
 
 # ------------------------
 # Logs Page
@@ -188,13 +141,14 @@ def show_logs():
     """
     return render_template_string(template, logs=logs)
 
+
 @app.route("/", methods=["GET"])
 def home():
-    return "ACS WhatsApp Webhook & PDF Service 🚀. Check /logs or /upload.", 200
+    return "ACS WhatsApp Webhook & PDF Service 🚀. Check /logs.", 200
+
 
 # ------------------------
 # Run
 # ------------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
-
