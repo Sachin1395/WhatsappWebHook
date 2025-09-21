@@ -1,6 +1,6 @@
 import os
 import json
-from flask import Flask, request, jsonify, abort, render_template_string
+from flask import Flask, request, jsonify, abort, render_template_string, send_file, url_for
 from dotenv import load_dotenv
 
 # Azure Communication Services
@@ -10,12 +10,17 @@ from azure.communication.messages.models import TextNotificationContent
 # OpenAI
 from openai import AzureOpenAI
 
+# PDF
+from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import A4
+from PyPDF2 import PdfReader, PdfWriter
+
+# ------------------------
+# Load Environment
+# ------------------------
 load_dotenv()
 app = Flask(__name__)
 
-# ------------------------
-# Config
-# ------------------------
 endpoint = os.getenv("AZURE_OPENAI_ENDPOINT", "https://whatsappmsgrespond.openai.azure.com/")
 deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o-mini")
 api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-12-01-preview")
@@ -122,6 +127,87 @@ def eventgrid_listener():
 
 
 # ------------------------
+# PDF Upload & Merge
+# ------------------------
+@app.route('/upload', methods=['POST'])
+def upload():
+    try:
+        content = request.get_json()
+        print("Received JSON:", content)
+
+        # Extract values
+        name = content.get('name', 'N/A')
+        age = content.get('age', 'N/A')
+        gender = content.get('gender', 'N/A')
+        city = content.get('city', 'N/A')
+        phone = content.get('phone', 'N/A')
+        symptoms = content.get('symptoms', 'N/A')
+        recommendation = content.get('recommendation', 'N/A')
+        date = content.get('date', 'N/A')
+        time = content.get('time', 'N/A')
+
+        input_pdf = "input.pdf"   # base template
+        output_pdf = "output.pdf"
+        temp_pdf = "temp.pdf"
+
+        # Create overlay PDF
+        c = canvas.Canvas(temp_pdf, pagesize=A4)
+        c.setFont("Helvetica", 15)
+        c.drawString(250, 507, str(name))
+        c.drawString(250, 487, str(age))
+        c.drawString(250, 467, str(gender))
+        c.drawString(250, 447, str(city))
+        c.drawString(250, 427, str(phone))
+        c.drawString(100, 357, str(symptoms))
+        c.drawString(100, 235, str(recommendation))
+        c.drawString(100, 155, str(date))
+        c.drawString(95, 135, str(time))
+        c.save()
+
+        # Merge overlay into template
+        reader = PdfReader(input_pdf)
+        writer = PdfWriter()
+        overlay_reader = PdfReader(temp_pdf)
+
+        for page_num in range(len(reader.pages)):
+            page = reader.pages[page_num]
+            if page_num == 0:
+                overlay_page = overlay_reader.pages[0]
+                page.merge_page(overlay_page)
+            writer.add_page(page)
+
+        with open(output_pdf, "wb") as f:
+            writer.write(f)
+
+        print(f"✅ PDF created successfully: {output_pdf}")
+
+        # Return download button
+        return f"""
+        <html>
+            <head><title>PDF Generated</title></head>
+            <body>
+                <h2>✅ PDF Generated Successfully!</h2>
+                <p>Click the button below to download your file:</p>
+                <a href="{url_for('download_pdf')}" download>
+                    <button style="padding:10px 20px; font-size:16px; cursor:pointer;">⬇ Download PDF</button>
+                </a>
+            </body>
+        </html>
+        """
+
+    except Exception as ex:
+        return f"❌ Error: {str(ex)}", 400
+
+
+@app.route('/download', methods=['GET'])
+def download_pdf():
+    output_pdf = "output.pdf"
+    if not os.path.exists(output_pdf):
+        return "❌ No PDF generated yet. Please POST data to /upload first."
+    return send_file(output_pdf, as_attachment=True)
+
+
+# ------------------------
 # Logs Page
 # ------------------------
 @app.route("/logs", methods=["GET"])
@@ -142,13 +228,16 @@ def show_logs():
     return render_template_string(template, logs=logs)
 
 
+# ------------------------
+# Home
+# ------------------------
 @app.route("/", methods=["GET"])
 def home():
-    return "ACS WhatsApp Webhook & PDF Service 🚀. Check /logs.", 200
+    return "🚀 ACS WhatsApp Webhook & PDF Service is running! Check /logs.", 200
 
 
 # ------------------------
-# Run
+# Run App
 # ------------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
