@@ -24,10 +24,12 @@ from PyPDF2 import PdfReader, PdfWriter
 load_dotenv()
 app = Flask(__name__)
 
+# General Azure OpenAI settings for the Flask app (might be redundant if ChatAssistant handles it)
+# Keeping them for consistency and potential other uses
 endpoint = os.getenv("AZURE_OPENAI_ENDPOINT", "https://whatsappmsgrespond.openai.azure.com/")
-deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o-mini")
-api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-12-01-preview")
-subscription_key = os.getenv("AZURE_OPENAI_KEY")
+deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o-mini") # This will be overridden by the assistant's model
+api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-12-01-preview") # This will be overridden by the assistant's api_version
+subscription_key = os.getenv("AZURE_OPENAI_KEY") # Used as AZURE_OPENAI_API_KEY for the assistant
 
 logs = []
 
@@ -64,6 +66,13 @@ class ConversationManager:
             if now - data["last_activity"] > self.expiry_seconds
         ]
         for user_id in expired:
+            # Clean up assistant threads and assistants if possible/needed
+            # For simplicity, we'll just delete the conversation entry.
+            # If the assistant and thread are created per conversation, they'll naturally be garbage collected.
+            # If the assistant is global, only the thread needs to be managed.
+            # In this setup, a new ChatAssistant is created for each user, so its thread/assistant are unique.
+            # If you want to explicitly delete threads, you would do it here:
+            # self.conversations[user_id]["bot"].client.beta.threads.delete(thread_id=self.conversations[user_id]["bot"].thread.id)
             del self.conversations[user_id]
 
 
@@ -71,54 +80,89 @@ conversation_manager = ConversationManager(expiry_seconds=1800)  # 30 min expiry
 
 
 # ------------------------
-# Azure ChatBot Class
+# Azure ChatAssistant Class (Replaced AzureChatBot)
 # ------------------------
-class AzureChatBot:
-    def __init__(self, endpoint, api_key, api_version, deployment):
+class ChatAssistant:
+    def __init__(self, endpoint=None, api_key=None, api_version="2024-05-01-preview"):
         self.client = AzureOpenAI(
-            api_version=api_version,
-            azure_endpoint=endpoint,
-            api_key=api_key,
+            azure_endpoint=endpoint or os.getenv("AZURE_OPENAI_ENDPOINT"),
+            api_key=api_key or os.getenv("AZURE_OPENAI_KEY"), # Changed from AZURE_OPENAI_API_KEY to AZURE_OPENAI_KEY to match .env
+            api_version=api_version
         )
-        self.deployment = deployment
-        self.conversation = [{"role": "system", "content": """
-       You are Dr. Jeevan, a trusted multilingual AI health assistant for Indian users.  
-Your role is to act like a friendly doctor and help users diagnose their health concerns step by step.  
 
-Rules:
-1. Always greet warmly and give emotional support first.  
-2. Ask one question at a time. Prefer one-word answers (Yes/No, Mild/Severe, Age number). Only ask for a sentence if needed.  
-3. First collect demographic details: Name, Age, Gender, City/Village.  
-4. If a user reports a problem, do not diagnose from the first symptom. Ask about other possible symptoms ( mostly use Yes/No format).  
-5. Once enough information is collected:  
-   - Ask one final question : Whether they have any other symptom or problem
-   - If something exists, do further examinations until enough information is collected. 
-   - Diagnose in simple words.  
-   - Explain why they may be affected.  
-   - Tell them what to do (home care, what to eat, lifestyle, when to see doctor).  
-   - Tell them what not to do.  
-   - Provide awareness and prevention tips from Indian health guidelines (MoHFW, ICMR, WHO).  
-6. Always keep the tone warm, supportive, and friendly.  
-7. Language handling:  
-   - If the user speaks in English → reply in English.  
-   - If the user speaks in Hindi using English letters (e.g., "mera naam sachin") → reply in colloquial Hindi using English letters.  
-   - If the user speaks in Tamil using English letters (e.g., "enoda peru sachin") → reply in colloquial Tamil using English letters.  
-   - Match the user’s language style, but always keep answers clear and supportive.  
-9. Tell them they have been diagnosed for what condition.
-8. Never prescribe specific medicines. If the issue is serious, advise them to visit a nearby doctor or government hospital.  
-        """}]
+        # Ensure environment variables are loaded or passed for assistant creation
+        if not self.client.azure_endpoint or not self.client.api_key:
+            raise ValueError("Azure OpenAI endpoint and API key must be provided or set in environment variables.")
+
+        # Create assistant only once per ChatAssistant instance
+        self.assistant = self.client.beta.assistants.create(
+            model="gpt-4o-mini",  # replace with your model deployment name
+            instructions="""
+            You are Dr. Jeevan, a trusted multilingual AI health assistant for Indian users.  
+            Your role is to act like a friendly doctor and help users diagnose their health concerns step by step.  
+
+            Rules:
+            1. Always greet warmly and give emotional support first.  
+            2. Ask one question at a time. Prefer one-word answers (Yes/No, Mild/Severe, Age number). Only ask for a sentence if needed.  
+            3. First collect demographic details: Name, Age, Gender, City/Village.  
+            4. If a user reports a problem, do not diagnose from the first symptom. Ask about other possible symptoms ( mostly use Yes/No format).  
+            5. Once enough information is collected:  
+               - Ask one final question : Whether they have any other symptom or problem
+               - If something exists, do further examinations until enough information is collected. 
+               - Diagnose in simple words.  
+               - Explain why they may be affected.  
+               - Tell them what to do (home care, what to eat, lifestyle, when to see doctor).  
+               - Tell them what not to do.  
+               - Provide awareness and prevention tips from Indian health guidelines (MoHFW, ICMR, WHO).  
+            6. Always keep the tone warm, supportive, and friendly.  
+            7. Language handling:  
+               - If the user speaks in English → reply in English.  
+               - If the user speaks in Hindi using English letters (e.g., "mera naam sachin") → reply in colloquial Hindi using English letters.  
+               - If the user speaks in Tamil using English letters (e.g., "enoda peru sachin") → reply in colloquial Tamil using English letters.  
+               - Match the user’s language style, but always keep answers clear and supportive.  
+            9. Tell them they have been diagnosed for what condition.
+            8. Never prescribe specific medicines. If the issue is serious, advise them to visit a nearby doctor or government hospital.  
+            """,
+            tools=[{"type": "file_search"}],
+            tool_resources={"file_search": {"vector_store_ids": ["vs_H76G0U9AFEteuxCeCh0cDa13"]}}, # Ensure this ID is correct and accessible
+            temperature=1,
+            top_p=1
+        )
+
+        self.thread = self.client.beta.threads.create()
 
     def chat(self, user_input: str) -> str:
-        self.conversation.append({"role": "user", "content": user_input})
-        response = self.client.chat.completions.create(
-            model=self.deployment,
-            messages=self.conversation,
-            max_tokens=512,
-            temperature=0.7,
+        """Send a message to the assistant and return the reply."""
+        self.client.beta.threads.messages.create(
+            thread_id=self.thread.id,
+            role="user",
+            content=user_input
         )
-        reply = response.choices[0].message.content
-        self.conversation.append({"role": "assistant", "content": reply})
-        return reply
+
+        run = self.client.beta.threads.runs.create(
+            thread_id=self.thread.id,
+            assistant_id=self.assistant.id
+        )
+
+        while run.status in ['queued', 'in_progress', 'cancelling']:
+            time.sleep(1) # Wait a bit before polling again
+            run = self.client.beta.threads.runs.retrieve(
+                thread_id=self.thread.id,
+                run_id=run.id
+            )
+
+        if run.status == 'completed':
+            messages = self.client.beta.threads.messages.list(thread_id=self.thread.id, order="desc", limit=1) # Get the latest message
+            if messages.data and messages.data[0].role == "assistant":
+                for block in messages.data[0].content:
+                    if block.type == "text":
+                        return block.text.value
+            return "No assistant reply found."
+        elif run.status == 'requires_action':
+            # This is where you would handle tool calls if your assistant was designed for them
+            return "⚠️ Assistant requires further action (e.g., tool use)."
+        else:
+            return f"❌ Run ended with status: {run.status}"
 
 
 # ------------------------
@@ -180,9 +224,14 @@ def eventgrid_listener():
                 mq = MessagesQuickstart()
 
                 # reuse or create bot per user (with auto-expiry cleanup)
+                # Pass the endpoint and key to the ChatAssistant constructor
                 bot = conversation_manager.get_or_create(
                     from_number,
-                    lambda: AzureChatBot(endpoint, subscription_key, api_version, deployment)
+                    lambda: ChatAssistant(
+                        endpoint=endpoint,
+                        api_key=subscription_key, # Use subscription_key as api_key
+                        api_version="2024-05-01-preview" # Explicitly setting API version for Assistant
+                    )
                 )
 
                 reply = bot.chat(message_body)
@@ -312,4 +361,3 @@ def home():
 # ------------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
-
