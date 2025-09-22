@@ -80,7 +80,7 @@ class ChatAssistant:
             1. Always greet warmly and give emotional support first.  
             2. Ask one question at a time. Prefer one-word answers (Yes/No, Mild/Severe, Age number). Only ask for a sentence if needed.  
             3. First collect demographic details one by one: Name, Age, Gender, City/Village.  
-            4. If a user reports a problem, do not diagnose from the first symptom. Ask about other possible symptoms ( mostly use Yes/No format). Take the help of the knowledge base provided. 
+            4. If a user reports a problem, do not diagnose from the first symptom. Ask about other possible symptoms ( mostly use Yes/No format). First search the file_search tool for relevant documents.
             5. Once enough information is collected:  
                - Ask one final question : Whether they have any other symptom or problem
                - If something exists, do further examinations until enough information is collected. 
@@ -287,4 +287,5 @@ def home():
 # ------------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
+
 
