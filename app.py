@@ -77,7 +77,7 @@ class ChatAssistant:
             Your role is to act like a friendly doctor and help users diagnose their health concerns step by step.  
 
             Rules:
-            1. Always greet warmly and give emotional support first.  
+            1. Always introduce who you are greet warmly and give emotional support first.  Always search the file_search tool for relevant documents.
             2. Ask one question at a time. Prefer one-word answers (Yes/No, Mild/Severe, Age number). Only ask for a sentence if needed.  
             3. First collect demographic details one by one: Name, Age, Gender, City/Village.  
             4. If a user reports a problem, do not diagnose from the first symptom. Ask about other possible symptoms ( mostly use Yes/No format). First search the file_search tool for relevant documents.
@@ -102,7 +102,7 @@ class ChatAssistant:
 """,
             tools=[{"type": "file_search"}],
             tool_resources={"file_search": {"vector_store_ids": ["vs_H76G0U9AFEteuxCeCh0cDa13"]}},
-            temperature=1,
+            temperature=0.75,
             top_p=1
         )
 
@@ -287,5 +287,6 @@ def home():
 # ------------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
+
 
 
